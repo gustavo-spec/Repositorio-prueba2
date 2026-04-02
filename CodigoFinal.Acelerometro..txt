@@ -1,0 +1,148 @@
+#include <Wire.h>
+#include <Adafruit_Sensor.h>
+#include <Adafruit_ADXL345_U.h>
+
+Adafruit_ADXL345_Unified accel = Adafruit_ADXL345_Unified(12345);
+
+// Offsets de calibración
+float x_offset = 0.0, y_offset = 0.0, z_offset = 0.0;
+
+// Lecturas anteriores
+float prev_x = 0.0, prev_y = 0.0, prev_z = 0.0;
+
+// Detección
+const float UMBRAL_CAMBIO = 5.5;
+const unsigned long INTERVALO = 1 * 5 * 1000UL;  // 5 minutos
+const int CAMBIOS_REQUERIDOS = 7;
+const int BLOQUES_REQUERIDOS = 4;                // Al menos 4 bloques con cambio
+const int TOTAL_BLOQUES_HORA = 12;               // 60 min / 5 min = 12 bloques
+
+int contadorCambiosBruscos = 0;
+int bloquesConCambio = 0;
+int bloquesEvaluados = 0;
+
+unsigned long tiempoInicio = 0;
+bool mensajeEnviado = false;
+
+#define BLUETOOTH Serial1  // Nano Every tiene Serial1 en pines 0 (RX), 1 (TX)
+
+void setup() {
+  Serial.begin(9600);
+  BLUETOOTH.begin(9600); // Asegúrate de que el HC-05 esté configurado a esta velocidad
+
+  if (!accel.begin()) {
+    Serial.println("Sensor ADXL345 no detectado.");
+    while (1);
+  }
+
+  accel.setRange(ADXL345_RANGE_16_G);  // Mejor rango para cambios bruscos
+  calibrarSensor();
+  tiempoInicio = millis();
+
+  Serial.println("Sistema iniciado. Evaluando cada 5 minutos...");
+}
+
+void loop() {
+  sensors_event_t event;
+  accel.getEvent(&event);
+
+  // Aplicar offset
+  float x = event.acceleration.x - x_offset;
+  float y = event.acceleration.y - y_offset;
+  float z = event.acceleration.z - z_offset;
+
+  // Detectar cambio brusco
+  bool cambioBrusco =
+    abs(x - prev_x) > UMBRAL_CAMBIO ||
+    abs(y - prev_y) > UMBRAL_CAMBIO ||
+    abs(z - prev_z) > UMBRAL_CAMBIO;
+
+  if (cambioBrusco) {
+    contadorCambiosBruscos++;
+    Serial.println("→ Cambio brusco detectado.");
+  }
+
+  // Actualizar lecturas previas
+  prev_x = x;
+  prev_y = y;
+  prev_z = z;
+
+  // Evaluar cada 5 minutos
+  if (millis() - tiempoInicio >= INTERVALO) {
+    Serial.println("----- Resultado tras 5 minutos -----");
+    Serial.print("Cambios bruscos detectados: ");
+    Serial.println(contadorCambiosBruscos);
+
+    if (contadorCambiosBruscos >= CAMBIOS_REQUERIDOS) {
+      Serial.println("✅ Hay cambio en este bloque");
+      bloquesConCambio++;
+    } else {
+      Serial.println("⛔ Sin cambio en este bloque");
+    }
+
+    bloquesEvaluados++;
+
+    // Si ya pasaron los 12 bloques (1 hora)
+    if (bloquesEvaluados >= TOTAL_BLOQUES_HORA) {
+      Serial.println("===== Evaluación tras 1 hora =====");
+      Serial.print("Bloques con movimiento: ");
+      Serial.println(bloquesConCambio);
+
+      if (bloquesConCambio >= BLOQUES_REQUERIDOS) {
+        Serial.println("🎉 Bien hecho");
+      } else {
+        Serial.println("Falta movimiento");
+        if (!mensajeEnviado) {
+          enviarMensajeBluetooth();
+          mensajeEnviado = true;
+          delay(3000);
+          reiniciarArduino();
+        }
+      }
+
+      // Reiniciar contadores
+      bloquesConCambio = 0;
+      bloquesEvaluados = 0;
+    }
+
+    // Reiniciar para siguiente bloque
+    contadorCambiosBruscos = 0;
+    tiempoInicio = millis();
+    Serial.println("------------------------------------");
+  }
+
+  delay(1000);  // Revisa cada segundo
+}
+
+// Calibración simple
+void calibrarSensor() {
+  const int muestras = 100;
+  float sum_x = 0, sum_y = 0, sum_z = 0;
+
+  Serial.println("Calibrando...");
+
+  for (int i = 0; i < muestras; i++) {
+    sensors_event_t event;
+    accel.getEvent(&event);
+    sum_x += event.acceleration.x;
+    sum_y += event.acceleration.y;
+    sum_z += event.acceleration.z;
+    delay(10);
+  }
+
+  x_offset = sum_x / muestras;
+  y_offset = sum_y / muestras;
+  z_offset = sum_z / muestras;
+
+  Serial.println("Calibración completa.");
+}
+
+void enviarMensajeBluetooth() {
+  Serial.println("📤 Enviando comando por Bluetooth...");
+  BLUETOOTH.println("ACTIVAR_MACRO");
+}
+
+void reiniciarArduino() {
+  Serial.println("🔁 Reiniciando Arduino...");
+  NVIC_SystemReset();  // Solo funciona en placas basadas en SAMD (como Nano Every)
+}
