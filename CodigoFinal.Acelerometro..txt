@@ -145,4 +145,4 @@ void enviarMensajeBluetooth() {
 void reiniciarArduino() {
   Serial.println("🔁 Reiniciando Arduino...");
   NVIC_SystemReset();  // Solo funciona en placas basadas en SAMD (como Nano Every)
-}
+} //hola mundo
